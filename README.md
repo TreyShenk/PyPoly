@@ -3,6 +3,15 @@
 Polyphase analysis/synthesis channelizer primitives in Python, recreating a slice of the
 functionality in MATLAB's DSP System Toolbox (`dsp.Channelizer` / polyphase filter banks).
 
+## About this project
+
+The code in this repository is AI-written (Claude Code), not hand-written. It is directed and
+reviewed by a DSP engineer, who sets requirements, checks the underlying signal-processing math, and
+verifies each change numerically (tone-injection tests, frequency/phase checks against expected
+values, etc.) rather than accepting AI output at face value -- see the [Status](#status) section
+below for what has and hasn't been verified this way. Treat this as AI-generated code with expert
+review and direction, not as code written from scratch by a DSP expert.
+
 ## Status
 
 | Component | Status |
