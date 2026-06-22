@@ -16,15 +16,34 @@ is ready to use. If you need the full analysis -> synthesis round trip, that par
 
 ## Install
 
+### As a dependency in another project
+
+```bash
+uv add git+https://github.com/TreyShenk/PyPoly
+```
+
+or with `pip`:
+
+```bash
+pip install git+https://github.com/TreyShenk/PyPoly
+```
+
+This pulls `pypoly` itself plus its runtime dependencies (`numpy`, `scipy`, `numba`). It does not
+install the notebooks' extra dependencies (`matplotlib`, `ipykernel`, `ipympl`) -- those are only
+needed when working in this repo directly (see below).
+
+### For working on pypoly itself
+
 Requires [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
+git clone https://github.com/TreyShenk/PyPoly.git
+cd PyPoly
 uv sync
 ```
 
-This installs `pypoly` itself (editable) plus its runtime dependencies (`numpy`, `scipy`, `numba`).
-The notebooks additionally need the `dev` dependency group (`matplotlib`, `ipykernel`, `ipympl`),
-which `uv sync` installs by default as well.
+This installs `pypoly` itself (editable) plus its runtime dependencies, and the `dev` dependency
+group (`matplotlib`, `ipykernel`, `ipympl`) needed by the notebooks.
 
 ## Usage
 
@@ -90,4 +109,25 @@ edits without reinstalling.
 
 ```bash
 uv run python -m unittest discover -s tests -v
+```
+
+## Versioning
+
+Releases follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`), tracked in
+`pyproject.toml`'s `[project].version` and tagged in git as `vMAJOR.MINOR.PATCH` (e.g. `v0.1.0`).
+
+The project is currently `0.x` (pre-1.0): the public API may still change, and
+`PolyphaseSynthesisChannelizer` is known broken (see [Status](#status)). While pre-1.0:
+
+- **PATCH** (`0.1.0` -> `0.1.1`): bug fixes and docs that don't change the public API.
+- **MINOR** (`0.1.0` -> `0.2.0`): new features or any API change, including breaking ones --
+  pre-1.0, `MINOR` is the SemVer-sanctioned slot for breaking changes.
+- **MAJOR** stays `0` until `PolyphaseSynthesisChannelizer` is fixed and the API is considered
+  stable; `1.0.0` marks that point.
+
+To cut a release: bump `version` in `pyproject.toml`, commit, then tag and push:
+
+```bash
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
 ```
