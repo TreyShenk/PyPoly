@@ -1,0 +1,22 @@
+[project]
+name = "pypoly"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "numba>=0.65.1",
+    "numpy>=2.4.6",
+    "scipy>=1.18.0",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.3.0",
+    "ipympl>=0.10.0",
+    "matplotlib>=3.11.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
