@@ -23,6 +23,15 @@ class ChannelizerTests(unittest.TestCase):
         y = analysis.process(x)
         self.assertEqual(y.shape, (8, 33))
 
+    def test_process_rejects_non_1d_input(self) -> None:
+        analysis = PolyphaseAnalysisChannelizer.from_design(
+            num_channels=8, taps_per_channel=12
+        )
+        with self.assertRaises(ValueError):
+            analysis.process(np.zeros((100, 2), dtype=np.complex128))
+        with self.assertRaises(ValueError):
+            analysis.process(np.complex128(1.0))
+
     def test_decimation_must_be_in_range(self) -> None:
         with self.assertRaises(ValueError):
             PolyphaseAnalysisChannelizer.from_design(

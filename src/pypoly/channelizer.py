@@ -160,7 +160,9 @@ class PolyphaseAnalysisChannelizer:
         return cls(num_channels=num_channels, prototype_taps=taps, decimation=decimation)
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        x = np.asarray(samples, dtype=np.complex128).reshape(-1)
+        x = np.asarray(samples, dtype=np.complex128)
+        if x.ndim != 1:
+            raise ValueError(f"samples must be a 1D array, got shape {x.shape}")
         if x.size == 0:
             return np.zeros((self.num_channels, 0), dtype=np.complex128)
 
