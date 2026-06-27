@@ -4,7 +4,7 @@ import warnings
 from dataclasses import dataclass
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 from scipy.signal import firwin
 
 # A channel's farthest neighbor always sits at exactly half the Nyquist band,
@@ -58,21 +58,21 @@ def design_prototype_filter(
     return taps.astype(np.float64, copy=False)
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _analysis_polyphase_kernel(
-    samples: np.ndarray, phases: np.ndarray, num_blocks: int, block_stride: int
+    samples_padded: np.ndarray, phases: np.ndarray, num_blocks: int, block_stride: int, pad: int
 ) -> np.ndarray:
+    # samples_padded has (M*K - 1) leading zeros so every access is in-bounds
+    # with no conditional; prange parallelises independent output blocks.
     m_channels, taps_per_phase = phases.shape
     out = np.zeros((m_channels, num_blocks), dtype=np.complex128)
 
-    for n in range(num_blocks):
-        base = n * block_stride
+    for n in prange(num_blocks):
+        base = pad + n * block_stride
         for phase_idx in range(m_channels):
             acc = 0.0 + 0.0j
             for tap_idx in range(taps_per_phase):
-                sample_idx = base - tap_idx * m_channels - phase_idx
-                if 0 <= sample_idx < samples.size:
-                    acc += phases[phase_idx, tap_idx] * samples[sample_idx]
+                acc += phases[phase_idx, tap_idx] * samples_padded[base - tap_idx * m_channels - phase_idx]
             out[phase_idx, n] = acc
     return out
 
@@ -167,7 +167,9 @@ class PolyphaseAnalysisChannelizer:
             return np.zeros((self.num_channels, 0), dtype=np.complex128)
 
         num_blocks = int(np.ceil(x.size / self._decimation))
-        phases_out = _analysis_polyphase_kernel(x, self._phases, num_blocks, self._decimation)
+        pad = self._phases.shape[1] * self.num_channels - 1  # M*K - 1
+        x_padded = np.concatenate([np.zeros(pad, dtype=np.complex128), x])
+        phases_out = _analysis_polyphase_kernel(x_padded, self._phases, num_blocks, self._decimation, pad)
         channels = np.fft.ifft(phases_out, axis=0)
 
         if self._decimation != self.num_channels:
