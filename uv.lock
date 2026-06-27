@@ -1056,7 +1056,6 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-bench = []
 dev = [
     { name = "ipykernel", specifier = ">=7.3.0" },
     { name = "ipympl", specifier = ">=0.10.0" },

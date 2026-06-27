@@ -1,31 +1,30 @@
 """
 Benchmark: PolyphaseAnalysisChannelizer vs naive per-channel demodulation.
 
+Installed as the ``pypoly-bench`` command. Useful for measuring throughput
+on the current hardware after installation.
+
 Usage:
-    uv run python benchmarks/bench_analysis.py          # full sweep
-    uv run python benchmarks/bench_analysis.py --quick  # single small case
+    pypoly-bench           # full parameter sweep
+    pypoly-bench --quick   # single small case (N=8192, M=8)
 """
 
 import argparse
-import sys
 import time
 import timeit
-from pathlib import Path
 
 import numpy as np
 from scipy.signal import lfilter
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from pypoly import PolyphaseAnalysisChannelizer, design_prototype_filter
+from pypoly import PolyphaseAnalysisChannelizer
 
 
 def naive_analysis(x: np.ndarray, h: np.ndarray, M: int, D: int) -> np.ndarray:
     """Per-channel frequency shift + causal FIR filter + downsample.
 
-    This is the straightforward approach a DSP practitioner would reach for
-    first: demodulate each channel individually, filter with the full prototype,
-    then decimate. Cost scales as O(N * M * len(h)).
+    The straightforward reference implementation: demodulate each channel
+    individually, filter with the full prototype, then decimate.
+    Cost scales as O(N * M * len(h)).
     """
     N = len(x)
     n = np.arange(N, dtype=np.float64)
@@ -46,13 +45,10 @@ def _fmt_row(label: str, N: int, M: int, K: int, ms: float, naive_ms: float) -> 
     )
 
 
-def benchmark(configs: list[tuple[int, int, int]], number: int = 5, repeat: int = 3) -> None:
+def run(configs: list[tuple[int, int, int]], number: int = 5, repeat: int = 3) -> None:
     print("\nWarming up Numba JIT (first call compiles; not included in timings)...")
-    _warmup_N, _warmup_M, _warmup_K = 1024, 8, 8
-    _ch = PolyphaseAnalysisChannelizer.from_design(
-        num_channels=_warmup_M, taps_per_channel=_warmup_K
-    )
-    _x = np.ones(_warmup_N, dtype=np.complex128)
+    _ch = PolyphaseAnalysisChannelizer.from_design(num_channels=8, taps_per_channel=8)
+    _x = np.ones(1024, dtype=np.complex128)
     t0 = time.perf_counter()
     _ch.process(_x)
     print(f"  JIT compile: {(time.perf_counter() - t0) * 1000:.0f} ms\n")
@@ -71,7 +67,6 @@ def benchmark(configs: list[tuple[int, int, int]], number: int = 5, repeat: int 
         h = analysis.prototype_taps
         D = M  # critically sampled
 
-        # Naive
         naive_times = timeit.repeat(
             lambda: naive_analysis(x, h, M, D),
             number=number,
@@ -79,8 +74,7 @@ def benchmark(configs: list[tuple[int, int, int]], number: int = 5, repeat: int 
         )
         naive_ms = min(naive_times) / number * 1000
 
-        # Polyphase (Numba already warm from the first call above; trigger
-        # this exact shape once to ensure the parallel kernel is compiled too)
+        # Trigger compilation for this exact (N, M, K) shape before timing
         analysis.process(x)
         poly_times = timeit.repeat(
             lambda: analysis.process(x),
@@ -95,11 +89,13 @@ def benchmark(configs: list[tuple[int, int, int]], number: int = 5, repeat: int 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="pypoly analysis channelizer benchmark")
+    parser = argparse.ArgumentParser(
+        description="Benchmark PolyphaseAnalysisChannelizer throughput on this system."
+    )
     parser.add_argument(
         "--quick",
         action="store_true",
-        help="Single small case (N=8192, M=8) — for CI or quick iteration",
+        help="Single small case (N=8192, M=8) — fast sanity check",
     )
     args = parser.parse_args()
 
@@ -116,7 +112,7 @@ def main() -> None:
 
     print("pypoly benchmark — PolyphaseAnalysisChannelizer vs naive demodulation")
     print(f"  number={5}, repeat={3}, taking min across repeats")
-    benchmark(configs)
+    run(configs)
 
 
 if __name__ == "__main__":
