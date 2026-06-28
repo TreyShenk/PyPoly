@@ -188,6 +188,187 @@ class PolyphaseAnalysisChannelizer:
         return channels
 
 
+class StreamingPolyphaseAnalysisChannelizer:
+    """Stateful polyphase analysis channelizer for continuous sample streams.
+
+    Processes one chunk of input samples at a time, maintaining filter state
+    across calls so that consecutive chunks produce the same channel outputs as
+    a single batch call on the concatenated signal.  Each call to
+    :meth:`process` returns exactly ``floor(available / decimation)`` output
+    blocks, where *available* is the number of buffered samples plus the length
+    of the new chunk.  Leftover samples are held in an internal buffer and
+    included in the next call.
+
+    Constructor parameters are identical to
+    :class:`PolyphaseAnalysisChannelizer`.  Use :meth:`from_design` or
+    :meth:`from_channelizer` for convenience construction.
+
+    **Transport:** This class is transport-agnostic — feed it whatever numpy
+    arrays your source provides.  Common patterns::
+
+        # ZeroMQ (pyzmq) — standard in the GNU Radio / SDR ecosystem
+        import zmq, numpy as np
+        ctx = zmq.Context()
+        sub = ctx.socket(zmq.SUB)
+        sub.connect("tcp://localhost:5555")
+        sub.setsockopt(zmq.SUBSCRIBE, b"")
+        while True:
+            data = sub.recv()
+            chunk = np.frombuffer(data, dtype=np.complex64).astype(np.complex128)
+            channels = streaming_ch.process(chunk)
+
+        # UDP — lower-level, no framing guarantees
+        import socket, numpy as np
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("", 5000))
+        while True:
+            data, _ = sock.recvfrom(65536)
+            chunk = np.frombuffer(data, dtype=np.complex64).astype(np.complex128)
+            channels = streaming_ch.process(chunk)
+    """
+
+    def __init__(
+        self,
+        num_channels: int,
+        prototype_taps: np.ndarray,
+        *,
+        decimation: int | None = None,
+    ) -> None:
+        # Validation mirrors PolyphaseAnalysisChannelizer.__post_init__
+        taps = np.asarray(prototype_taps, dtype=np.float64)
+        if taps.ndim != 1:
+            raise ValueError("prototype_taps must be a 1D array")
+        if taps.size % num_channels != 0:
+            raise ValueError("prototype_taps length must be divisible by num_channels")
+        effective_decimation = num_channels if decimation is None else decimation
+        if not (1 <= effective_decimation <= num_channels):
+            raise ValueError("decimation must be an integer in [1, num_channels]")
+
+        self._num_channels = num_channels
+        self._prototype_taps = taps
+        self._phases = taps.reshape(-1, num_channels).T.copy()
+        self._decimation = effective_decimation
+        self._pad = self._phases.shape[1] * num_channels - 1  # M*K - 1
+
+        self._history = np.zeros(self._pad, dtype=np.complex128)
+        self._input_buffer = np.zeros(0, dtype=np.complex128)
+        self._block_offset = 0
+
+    @classmethod
+    def from_design(
+        cls,
+        num_channels: int,
+        taps_per_channel: int,
+        *,
+        cutoff_ratio: float | None = None,
+        decimation: int | None = None,
+    ) -> StreamingPolyphaseAnalysisChannelizer:
+        if cutoff_ratio is None:
+            effective_decimation = num_channels if decimation is None else decimation
+            if not (1 <= effective_decimation <= num_channels):
+                raise ValueError("decimation must be an integer in [1, num_channels]")
+            cutoff_ratio = 0.9 * num_channels / effective_decimation
+        taps = design_prototype_filter(
+            num_channels=num_channels,
+            taps_per_channel=taps_per_channel,
+            cutoff_ratio=cutoff_ratio,
+        )
+        return cls(num_channels=num_channels, prototype_taps=taps, decimation=decimation)
+
+    @classmethod
+    def from_channelizer(
+        cls, channelizer: PolyphaseAnalysisChannelizer
+    ) -> StreamingPolyphaseAnalysisChannelizer:
+        """Create a streaming channelizer with the same filter as *channelizer*."""
+        return cls(
+            num_channels=channelizer.num_channels,
+            prototype_taps=channelizer.prototype_taps,
+            decimation=channelizer.decimation,
+        )
+
+    @property
+    def num_channels(self) -> int:
+        return self._num_channels
+
+    @property
+    def prototype_taps(self) -> np.ndarray:
+        return self._prototype_taps
+
+    @property
+    def decimation(self) -> int:
+        return self._decimation
+
+    @property
+    def oversample_rate(self) -> float:
+        """Informational only: num_channels / decimation."""
+        return self._num_channels / self._decimation
+
+    def reset(self) -> None:
+        """Reset filter state to zero initial conditions.
+
+        After reset the channelizer behaves as if freshly constructed: the
+        filter memory is cleared and the block offset counter restarts from
+        zero.  Use this to start a new stream without reallocating the filter.
+        """
+        self._history = np.zeros(self._pad, dtype=np.complex128)
+        self._input_buffer = np.zeros(0, dtype=np.complex128)
+        self._block_offset = 0
+
+    def process(self, chunk: np.ndarray) -> np.ndarray:
+        """Process one chunk of input samples.
+
+        Parameters
+        ----------
+        chunk:
+            1-D array of complex input samples.  Any length is accepted,
+            including lengths shorter than the decimation factor.
+
+        Returns
+        -------
+        np.ndarray
+            Channel outputs with shape ``(num_channels, num_blocks)`` where
+            ``num_blocks = floor(available / decimation)`` and *available* is
+            ``len(chunk)`` plus any samples buffered from previous calls.
+            Returns shape ``(num_channels, 0)`` if fewer than ``decimation``
+            samples are available.
+        """
+        x = np.asarray(chunk, dtype=np.complex128)
+        if x.ndim != 1:
+            raise ValueError(f"chunk must be a 1D array, got shape {x.shape}")
+
+        available = np.concatenate([self._input_buffer, x])
+        num_blocks = len(available) // self._decimation
+
+        if num_blocks == 0:
+            self._input_buffer = available
+            return np.zeros((self._num_channels, 0), dtype=np.complex128)
+
+        N_to_process = num_blocks * self._decimation
+        samples = available[:N_to_process]
+        self._input_buffer = available[N_to_process:]
+
+        x_padded = np.concatenate([self._history, samples])
+        phases_out = _analysis_polyphase_kernel(
+            x_padded, self._phases, num_blocks, self._decimation, self._pad
+        )
+        channels = np.fft.ifft(phases_out, axis=0)
+
+        if self._decimation != self._num_channels:
+            # Same correction as the batch class, but m_idx is global so phase
+            # coherence is maintained across consecutive process() calls.
+            m_idx = np.arange(self._block_offset, self._block_offset + num_blocks)
+            shift = (m_idx * self._decimation) % self._num_channels
+            k_idx = np.arange(self._num_channels).reshape(-1, 1)
+            correction = np.exp(
+                -1j * 2 * np.pi * k_idx * shift.reshape(1, -1) / self._num_channels
+            )
+            channels *= correction
+
+        self._history = np.concatenate([self._history, samples])[-self._pad:]
+        self._block_offset += num_blocks
+        return channels
+
+
 @dataclass(frozen=True)
 class PolyphaseSynthesisChannelizer:
     # TODO: analysis -> synthesis round trip does not reconstruct the input.

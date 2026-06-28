@@ -6,6 +6,7 @@ import numpy as np
 from pypoly import (
     PolyphaseAnalysisChannelizer,
     PolyphaseSynthesisChannelizer,
+    StreamingPolyphaseAnalysisChannelizer,
     design_prototype_filter,
 )
 
@@ -126,6 +127,111 @@ class ChannelizerTests(unittest.TestCase):
 
         self.assertEqual(x_hat.shape, (1024,))
         self.assertTrue(np.all(np.isfinite(x_hat)))
+
+
+class StreamingChannelizerTests(unittest.TestCase):
+    def _make_signal(self, N: int = 8192, seed: int = 0) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        return rng.standard_normal(N) + 1j * rng.standard_normal(N)
+
+    def _batch_reference(
+        self, x: np.ndarray, num_channels: int = 8, taps_per_channel: int = 16,
+        decimation: int | None = None,
+    ) -> np.ndarray:
+        analysis = PolyphaseAnalysisChannelizer.from_design(
+            num_channels=num_channels, taps_per_channel=taps_per_channel, decimation=decimation
+        )
+        return analysis.process(x)
+
+    def test_chunked_equals_batch_exact_blocks(self) -> None:
+        # Chunk size = exact multiple of decimation — no buffering involved
+        M, D, K = 8, 8, 16
+        x = self._make_signal()
+        batch = self._batch_reference(x, M, K, D)
+
+        streaming = StreamingPolyphaseAnalysisChannelizer.from_design(
+            num_channels=M, taps_per_channel=K, decimation=D
+        )
+        chunk_size = D * 16  # 128 samples per chunk
+        outputs = [streaming.process(x[i:i + chunk_size]) for i in range(0, len(x), chunk_size)]
+        result = np.concatenate(outputs, axis=1)
+
+        # Streaming uses floor(N/D) blocks; batch uses ceil(N/D). Trim to match.
+        np.testing.assert_allclose(result, batch[:, :result.shape[1]], atol=1e-10)
+
+    def test_chunked_equals_batch_partial_blocks(self) -> None:
+        # Chunk size is not a multiple of decimation — exercises the input buffer
+        M, D, K = 8, 8, 16
+        x = self._make_signal()
+        batch = self._batch_reference(x, M, K, D)
+
+        streaming = StreamingPolyphaseAnalysisChannelizer.from_design(
+            num_channels=M, taps_per_channel=K, decimation=D
+        )
+        chunk_size = 37  # prime, never a multiple of D=8
+        outputs = [streaming.process(x[i:i + chunk_size]) for i in range(0, len(x), chunk_size)]
+        result = np.concatenate(outputs, axis=1)
+
+        np.testing.assert_allclose(result, batch[:, :result.shape[1]], atol=1e-10)
+
+    def test_chunk_smaller_than_decimation_returns_empty(self) -> None:
+        M, D, K = 8, 8, 16
+        streaming = StreamingPolyphaseAnalysisChannelizer.from_design(
+            num_channels=M, taps_per_channel=K, decimation=D
+        )
+        # Feed D-1 samples — not enough for one output block
+        out = streaming.process(np.ones(D - 1, dtype=np.complex128))
+        self.assertEqual(out.shape, (M, 0))
+
+        # Feed one more sample — now we have exactly D samples buffered → one block
+        out = streaming.process(np.ones(1, dtype=np.complex128))
+        self.assertEqual(out.shape, (M, 1))
+
+    def test_reset_restores_initial_conditions(self) -> None:
+        M, K = 8, 16
+        x = self._make_signal(N=512)
+
+        streaming = StreamingPolyphaseAnalysisChannelizer.from_design(
+            num_channels=M, taps_per_channel=K
+        )
+        first_run = streaming.process(x)
+        streaming.reset()
+        second_run = streaming.process(x)
+
+        np.testing.assert_array_equal(first_run, second_run)
+
+    def test_from_channelizer_matches_batch(self) -> None:
+        M, K = 8, 16
+        x = self._make_signal()
+        batch = PolyphaseAnalysisChannelizer.from_design(num_channels=M, taps_per_channel=K)
+        streaming = StreamingPolyphaseAnalysisChannelizer.from_channelizer(batch)
+
+        batch_out = batch.process(x)
+        stream_out = streaming.process(x)
+
+        np.testing.assert_allclose(stream_out, batch_out[:, :stream_out.shape[1]], atol=1e-10)
+
+    def test_oversampled_chunked_equals_batch(self) -> None:
+        # Exercises the _block_offset phase correction accumulating across calls
+        M, D, K = 8, 4, 16
+        x = self._make_signal()
+        batch = self._batch_reference(x, M, K, D)
+
+        streaming = StreamingPolyphaseAnalysisChannelizer.from_design(
+            num_channels=M, taps_per_channel=K, decimation=D
+        )
+        chunk_size = 53  # not a multiple of D=4
+        outputs = [streaming.process(x[i:i + chunk_size]) for i in range(0, len(x), chunk_size)]
+        result = np.concatenate(outputs, axis=1)
+
+        np.testing.assert_allclose(result, batch[:, :result.shape[1]], atol=1e-10)
+
+    def test_process_rejects_non_1d_input(self) -> None:
+        streaming = StreamingPolyphaseAnalysisChannelizer.from_design(
+            num_channels=8, taps_per_channel=16
+        )
+        with self.assertRaises(ValueError):
+            streaming.process(np.zeros((100, 2), dtype=np.complex128))
 
 
 if __name__ == "__main__":
